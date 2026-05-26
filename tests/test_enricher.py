@@ -246,3 +246,10 @@ class TestLambdaHandler:
 
         assert len(result["records"]) == 3
         assert all(r["result"] == "Ok" for r in result["records"])
+        assert [r["recordId"] for r in result["records"]] == ["r1", "r2", "r3"]
+
+    def test_empty_batch_returns_empty_list(self):
+        with patch.object(enricher, "lookup_ips", return_value={}):
+            result = enricher.lambda_handler({"records": []}, None)
+
+        assert result["records"] == []
