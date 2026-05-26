@@ -14,6 +14,30 @@ locals {
 }
 
 # ------------------------------------------------------------
+# Cross-variable validation
+# Terraform validation blocks cannot reference other variables,
+# so we use locals with tobool() to produce plan-time errors.
+# ------------------------------------------------------------
+
+locals {
+  _validate_datadog = (
+    var.siem_destination_type == "datadog" && var.datadog_api_key == ""
+    ? tobool("ERROR: datadog_api_key is required when siem_destination_type is 'datadog'")
+    : true
+  )
+  _validate_splunk_endpoint = (
+    var.siem_destination_type == "splunk" && var.splunk_hec_endpoint == ""
+    ? tobool("ERROR: splunk_hec_endpoint is required when siem_destination_type is 'splunk'")
+    : true
+  )
+  _validate_splunk_token = (
+    var.siem_destination_type == "splunk" && var.splunk_hec_token == ""
+    ? tobool("ERROR: splunk_hec_token is required when siem_destination_type is 'splunk'")
+    : true
+  )
+}
+
+# ------------------------------------------------------------
 # S3 Bucket
 # Always provisioned regardless of SIEM destination type.
 # - When siem_destination_type = "s3": primary log destination.
@@ -42,6 +66,25 @@ resource "aws_s3_bucket_lifecycle_configuration" "firehose_backup" {
       days = 90
     }
   }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "firehose_backup" {
+  bucket = aws_s3_bucket.firehose_backup.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "firehose_backup" {
+  bucket = aws_s3_bucket.firehose_backup.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
 # ------------------------------------------------------------
