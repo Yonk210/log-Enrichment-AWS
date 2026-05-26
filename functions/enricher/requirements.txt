@@ -1,0 +1,1 @@
+# Enricher uses only the AWS Lambda runtime stdlib + boto3 (pre-installed)

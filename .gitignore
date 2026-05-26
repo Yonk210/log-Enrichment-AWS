@@ -1,0 +1,17 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfplan
+override.tf
+override.tf.json
+
+# Lambda build artifacts
+.builds/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
