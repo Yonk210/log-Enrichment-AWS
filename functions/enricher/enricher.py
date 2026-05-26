@@ -102,7 +102,7 @@ def parse_flow_log_line(line: str) -> dict[str, Any]:
             try:
                 record[field] = int(raw)
             except ValueError:
-                record[field] = raw
+                record[field] = None
         else:
             record[field] = raw
     return record
@@ -129,31 +129,31 @@ def build_empty_asset(cache_miss: bool = True) -> dict[str, Any]:
 
 def lookup_ips(ip_list: list[str]) -> dict[str, dict]:
     """
-    Performs a single DynamoDB BatchGetItem for all IPs in the batch.
-    Returns a dict keyed by IP address.
-
-    Note: BatchGetItem supports up to 100 keys per call. Firehose
-    transformation batches are typically well under this limit. Unprocessed
-    keys (throttled by DynamoDB) are logged as a warning but not retried —
-    affected records will receive cache_miss=True enrichment.
+    Performs DynamoDB BatchGetItem for all IPs in the batch, chunked into
+    groups of 100 (the BatchGetItem maximum). Returns a dict keyed by IP.
     """
     if not ip_list:
         return {}
 
-    response = _dynamodb.batch_get_item(
-        RequestItems={DYNAMODB_TABLE_NAME: {"Keys": [{"ip_address": ip} for ip in ip_list]}}
-    )
+    result: dict[str, dict] = {}
+    _CHUNK_SIZE = 100
 
-    if response.get("UnprocessedKeys"):
-        logger.warning(
-            "DynamoDB BatchGetItem: %d unprocessed keys (throttled)",
-            len(response["UnprocessedKeys"].get(DYNAMODB_TABLE_NAME, {}).get("Keys", [])),
+    for i in range(0, len(ip_list), _CHUNK_SIZE):
+        chunk = ip_list[i : i + _CHUNK_SIZE]
+        response = _dynamodb.batch_get_item(
+            RequestItems={DYNAMODB_TABLE_NAME: {"Keys": [{"ip_address": ip} for ip in chunk]}}
         )
 
-    return {
-        item["ip_address"]: item
-        for item in response.get("Responses", {}).get(DYNAMODB_TABLE_NAME, [])
-    }
+        if response.get("UnprocessedKeys"):
+            logger.warning(
+                "DynamoDB BatchGetItem: %d unprocessed keys (throttled)",
+                len(response["UnprocessedKeys"].get(DYNAMODB_TABLE_NAME, {}).get("Keys", [])),
+            )
+
+        for item in response.get("Responses", {}).get(DYNAMODB_TABLE_NAME, []):
+            result[item["ip_address"]] = item
+
+    return result
 
 
 def _item_to_asset(item: dict | None) -> dict[str, Any]:
@@ -242,28 +242,36 @@ def lambda_handler(event: dict, context: Any) -> dict:
     Firehose transformation entry point.
 
     Process:
-    1. Decode all records in the batch.
+    1. Decode all records in the batch (per-record errors are isolated).
     2. Extract all unique src/dst IPs for a single BatchGetItem call.
     3. Enrich each record using the cache result.
     4. Return records in Firehose transformation format.
     """
-    raw_records: list[tuple[str, str]] = []
+    decoded_records: list[tuple[str, str | None, str]] = []  # (recordId, raw_or_None, original_b64)
     all_ips: set[str] = set()
 
     for rec in event.get("records", []):
-        raw = base64.b64decode(rec["data"]).decode("utf-8").strip()
-        raw_records.append((rec["recordId"], raw))
-        parts = raw.split(" ")
-        if len(parts) >= 4:
-            if parts[2] != "-":
-                all_ips.add(parts[2])
-            if parts[3] != "-":
-                all_ips.add(parts[3])
+        record_id = rec.get("recordId", "")
+        original_b64 = rec.get("data", "")
+        try:
+            raw = base64.b64decode(original_b64).decode("utf-8").strip()
+            parsed = parse_flow_log_line(raw)
+            if parsed.get("srcaddr"):
+                all_ips.add(parsed["srcaddr"])
+            if parsed.get("dstaddr"):
+                all_ips.add(parsed["dstaddr"])
+            decoded_records.append((record_id, raw, original_b64))
+        except Exception as exc:
+            logger.error("Failed to decode record %s: %s", record_id, exc)
+            decoded_records.append((record_id, None, original_b64))
 
     cache = lookup_ips(list(all_ips))
 
     output: list[dict] = []
-    for record_id, raw in raw_records:
+    for record_id, raw, original_b64 in decoded_records:
+        if raw is None:
+            output.append({"recordId": record_id, "result": "ProcessingFailed", "data": original_b64})
+            continue
         try:
             enriched = enrich_record(raw, cache)
             data = base64.b64encode(
