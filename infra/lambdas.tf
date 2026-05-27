@@ -8,14 +8,14 @@
 
 data "archive_file" "collector" {
   type        = "zip"
-  source_dir  = "${path.module}/functions/collector"
-  output_path = "${path.module}/.builds/collector.zip"
+  source_dir  = "${path.module}/../functions/collector"
+  output_path = "${path.module}/../.builds/collector.zip"
 }
 
 data "archive_file" "enricher" {
   type        = "zip"
-  source_dir  = "${path.module}/functions/enricher"
-  output_path = "${path.module}/.builds/enricher.zip"
+  source_dir  = "${path.module}/../functions/enricher"
+  output_path = "${path.module}/../.builds/enricher.zip"
 }
 
 # ==============================================================
